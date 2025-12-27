@@ -65,4 +65,4 @@ if [[ "$RELOAD" -eq 1 ]]; then
   args+=(--reload)
 fi
 
-exec python3 -m jarvis_run_gateway "${args[@]}"
+exec arp-jarvis-rungateway "${args[@]}"

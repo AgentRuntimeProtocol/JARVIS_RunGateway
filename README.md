@@ -14,7 +14,7 @@ Implements: ARP Standard `spec/v1` Run Gateway API (contract: `ARP_Standard/spec
 ## Install
 
 ```bash
-python3 -m pip install -e .
+python3 -m pip install arp-jarvis-rungateway
 ```
 
 ## Local configuration (optional)
@@ -33,7 +33,7 @@ cp .env.example .env.local
 
 ```bash
 python3 -m pip install -e '.[run]'
-python3 -m jarvis_run_gateway
+arp-jarvis-rungateway
 ```
 
 > [!TIP]

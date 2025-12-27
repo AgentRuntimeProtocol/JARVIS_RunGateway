@@ -37,7 +37,7 @@ class RunGateway(BaseRunGatewayServer):
         *,
         run_coordinator: RunCoordinatorGatewayClient | None = None,
         run_coordinator_url: str | None = None,
-        service_name: str = "jarvis-run-gateway",
+        service_name: str = "arp-jarvis-rungateway",
         service_version: str = __version__,
     ) -> None:
         """
