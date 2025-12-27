@@ -1,0 +1,10 @@
+{
+  "root_node_type_ref": {
+    "node_type_id": "composite.demo",
+    "version": "0.1.0"
+  },
+  "input": {
+    "goal": "Hello from the template Run Gateway"
+  }
+}
+
