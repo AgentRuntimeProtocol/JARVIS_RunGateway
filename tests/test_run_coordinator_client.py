@@ -1,8 +1,11 @@
 import asyncio
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
+from arp_auth import AuthClient
+from arp_standard_client.run_coordinator import RunCoordinatorClient
 from arp_standard_client.errors import ArpApiError
 from arp_standard_model import NodeTypeRef, RunStartRequest
 from arp_standard_server import ArpServerError
@@ -45,7 +48,10 @@ def test_exchange_token_failure() -> None:
         def exchange_token(self, *, subject_token, audience=None, scope=None):  # type: ignore[no-untyped-def]
             raise _ExchangeError("fail")
 
-    client = RunCoordinatorGatewayClient(base_url="http://coordinator.test", auth_client=_BadAuth())
+    client = RunCoordinatorGatewayClient(
+        base_url="http://coordinator.test",
+        auth_client=cast(AuthClient, _BadAuth()),
+    )
 
     with pytest.raises(ArpServerError) as exc:
         asyncio.run(client._exchange_subject_token("token"))  # type: ignore[attr-defined]
@@ -65,7 +71,10 @@ def test_client_credentials_failure() -> None:
         def client_credentials(self, *, audience=None, scope=None):  # type: ignore[no-untyped-def]
             raise _CredsError("fail")
 
-    client = RunCoordinatorGatewayClient(base_url="http://coordinator.test", auth_client=_BadAuth())
+    client = RunCoordinatorGatewayClient(
+        base_url="http://coordinator.test",
+        auth_client=cast(AuthClient, _BadAuth()),
+    )
 
     with pytest.raises(ArpServerError) as exc:
         asyncio.run(client._client_credentials_token())  # type: ignore[attr-defined]
@@ -79,11 +88,15 @@ def test_api_error_passthrough() -> None:
         def start_run(self, request):  # type: ignore[no-untyped-def]
             raise ArpApiError("bad_request", "nope", status_code=418, details={"x": "y"})
 
+    def _api_error_factory(raw_client: Any) -> RunCoordinatorClient:
+        _ = raw_client
+        return cast(RunCoordinatorClient, _ApiErrorClient())
+
     client = RunCoordinatorGatewayClient(
         base_url="http://coordinator.test",
-        client=_BaseClient(),  # type: ignore[arg-type]
-        auth_client=_OkAuth(),
-        client_factory=lambda raw_client: _ApiErrorClient(),
+        client=cast(RunCoordinatorClient, _BaseClient()),
+        auth_client=cast(AuthClient, _OkAuth()),
+        client_factory=_api_error_factory,
     )
 
     with pytest.raises(ArpServerError) as exc:
@@ -98,14 +111,19 @@ def test_unexpected_error_maps_to_unavailable() -> None:
         def get_run(self, request):  # type: ignore[no-untyped-def]
             raise RuntimeError("boom")
 
+    def _boom_factory(raw_client: Any) -> RunCoordinatorClient:
+        _ = raw_client
+        return cast(RunCoordinatorClient, _BoomClient())
+
     client = RunCoordinatorGatewayClient(
         base_url="http://coordinator.test",
-        client=_BaseClient(),  # type: ignore[arg-type]
-        auth_client=_OkAuth(),
-        client_factory=lambda raw_client: _BoomClient(),
+        client=cast(RunCoordinatorClient, _BaseClient()),
+        auth_client=cast(AuthClient, _OkAuth()),
+        client_factory=_boom_factory,
     )
 
     with pytest.raises(ArpServerError) as exc:
         asyncio.run(client.get_run("run_1"))
     assert exc.value.code == "run_coordinator_unavailable"
+    assert exc.value.details is not None
     assert exc.value.details["run_coordinator_url"] == "http://coordinator.test"
