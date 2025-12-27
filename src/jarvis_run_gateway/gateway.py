@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import json
-import uuid
-
 from arp_standard_model import (
     Check,
     Health,
@@ -13,7 +10,6 @@ from arp_standard_model import (
     RunGatewayStartRunRequest,
     RunGatewayStreamRunEventsRequest,
     RunGatewayVersionRequest,
-    RunState,
     Status,
     VersionInfo,
 )
@@ -21,8 +17,15 @@ from arp_standard_server import ArpServerError
 from arp_standard_server.run_gateway import BaseRunGatewayServer
 
 from . import __version__
+from .request_context import get_bearer_token
 from .run_coordinator_client import RunCoordinatorGatewayClient
-from .utils import now, normalize_base_url, run_coordinator_bearer_token_from_env, run_coordinator_url_from_env
+from .utils import (
+    auth_client_from_env,
+    now,
+    normalize_base_url,
+    run_coordinator_audience_from_env,
+    run_coordinator_url_from_env,
+)
 
 
 class RunGateway(BaseRunGatewayServer):
@@ -34,8 +37,7 @@ class RunGateway(BaseRunGatewayServer):
         *,
         run_coordinator: RunCoordinatorGatewayClient | None = None,
         run_coordinator_url: str | None = None,
-        run_coordinator_bearer_token: str | None = None,
-        service_name: str = "arp-template-run-gateway",
+        service_name: str = "jarvis-run-gateway",
         service_version: str = __version__,
     ) -> None:
         """
@@ -45,9 +47,7 @@ class RunGateway(BaseRunGatewayServer):
           - run_coordinator: Optional gateway -> coordinator client. If provided,
             `start/get/cancel/stream` calls are proxied to the coordinator.
           - run_coordinator_url: Base URL for the Run Coordinator. Used only if
-            `run_coordinator` is not provided. Defaults from `ARP_RUN_COORDINATOR_URL`.
-          - run_coordinator_bearer_token: Optional bearer token for coordinator calls.
-            Used only if `run_coordinator` is not provided. Defaults from `ARP_RUN_COORDINATOR_BEARER_TOKEN`.
+            `run_coordinator` is not provided. Defaults from `JARVIS_RUN_COORDINATOR_URL`.
           - service_name: Name exposed by /v1/version.
           - service_version: Version exposed by /v1/version.
 
@@ -56,7 +56,6 @@ class RunGateway(BaseRunGatewayServer):
           - Replace in-memory fallback with your persistence layer.
           - Add authZ/validation before forwarding requests downstream.
         """
-        self._runs: dict[str, Run] = {}
         self._service_name = service_name
         self._service_version = service_version
 
@@ -66,13 +65,13 @@ class RunGateway(BaseRunGatewayServer):
 
         resolved_url = run_coordinator_url or run_coordinator_url_from_env()
         if resolved_url is None:
-            self._run_coordinator = None
-            return
+            raise RuntimeError("Run Coordinator is required for the Run Gateway")
 
         resolved_url = normalize_base_url(resolved_url)
         self._run_coordinator = RunCoordinatorGatewayClient(
             base_url=resolved_url,
-            bearer_token=run_coordinator_bearer_token or run_coordinator_bearer_token_from_env(),
+            auth_client=auth_client_from_env(),
+            exchange_audience=run_coordinator_audience_from_env(),
         )
 
     # Core methods - Run Gateway API implementations
@@ -144,29 +143,7 @@ class RunGateway(BaseRunGatewayServer):
           - Validate/normalize external inputs before forwarding.
           - Enforce authZ and/or quotas here (gateway-facing policy).
         """
-        if self._run_coordinator is not None:
-            return await self._run_coordinator.start_run(request.body)
-
-        run_id = request.body.run_id or f"run_{uuid.uuid4().hex}"
-        if run_id in self._runs:
-            raise ArpServerError(
-                code="run_already_exists",
-                message=f"Run '{run_id}' already exists",
-                status_code=409,
-            )
-
-        root_node_run_id = f"node_run_{uuid.uuid4().hex}"
-        run = Run(
-            run_id=run_id,
-            state=RunState.running,
-            root_node_run_id=root_node_run_id,
-            run_context=request.body.run_context,
-            started_at=now(),
-            ended_at=None,
-            extensions=request.body.extensions,
-        )
-        self._runs[run_id] = run
-        return run
+        return await self._require_coordinator().start_run(request.body, subject_token=self._subject_token())
 
     async def get_run(self, request: RunGatewayGetRunRequest) -> Run:
         """
@@ -179,9 +156,9 @@ class RunGateway(BaseRunGatewayServer):
           - Use your DB/job system as the source of truth instead of memory.
           - Gate visibility (authZ) for multi-tenant environments.
         """
-        if self._run_coordinator is not None:
-            return await self._run_coordinator.get_run(request.params.run_id)
-        return self._get_local_run(request.params.run_id)
+        return await self._require_coordinator().get_run(
+            request.params.run_id, subject_token=self._subject_token()
+        )
 
     async def cancel_run(self, request: RunGatewayCancelRunRequest) -> Run:
         """
@@ -194,15 +171,9 @@ class RunGateway(BaseRunGatewayServer):
           - Enforce authZ (who can cancel which runs).
           - Add cooperative cancellation and cleanup hooks in your backend.
         """
-        if self._run_coordinator is not None:
-            return await self._run_coordinator.cancel_run(request.params.run_id)
-
-        run = self._get_local_run(request.params.run_id)
-        if run.state in {RunState.succeeded, RunState.failed, RunState.canceled}:
-            return run
-        updated = run.model_copy(update={"state": RunState.canceled, "ended_at": now()})
-        self._runs[run.run_id] = updated
-        return updated
+        return await self._require_coordinator().cancel_run(
+            request.params.run_id, subject_token=self._subject_token()
+        )
 
     async def stream_run_events(self, request: RunGatewayStreamRunEventsRequest) -> str:
         """
@@ -216,26 +187,19 @@ class RunGateway(BaseRunGatewayServer):
           - Implement your own event store and stream NDJSON lines.
           - Add filtering/redaction for external consumers.
         """
-        if self._run_coordinator is not None:
-            return await self._run_coordinator.stream_run_events(request.params.run_id)
+        return await self._require_coordinator().stream_run_events(
+            request.params.run_id, subject_token=self._subject_token()
+        )
 
-        payload = {
-            "run_id": request.params.run_id,
-            "seq": 0,
-            "type": "run_started",
-            "time": now().isoformat(),
-            "data": {"message": "Template Run Gateway does not stream real events yet."},
-        }
-        return json.dumps(payload) + "\n"
-
-    # Helpers (internal): implementation detail for the template.
-    def _get_local_run(self, run_id: str) -> Run:
-        """Internal helper for in-memory fallback when no coordinator is configured."""
-        run = self._runs.get(run_id)
-        if run is None:
+    # Helpers (internal): implementation detail for the reference implementation.
+    def _require_coordinator(self) -> RunCoordinatorGatewayClient:
+        if self._run_coordinator is None:
             raise ArpServerError(
-                code="run_not_found",
-                message=f"Run '{run_id}' not found",
-                status_code=404,
+                code="run_coordinator_missing",
+                message="Run Coordinator is not configured for this gateway",
+                status_code=503,
             )
-        return run
+        return self._run_coordinator
+
+    def _subject_token(self) -> str | None:
+        return get_bearer_token()

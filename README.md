@@ -1,17 +1,15 @@
-# ARP Template Run Gateway
+# JARVIS Run Gateway
 
-Use this repo as a starting point for building an **ARP compliant Run Gateway** service.
+First-party OSS reference implementation of the ARP `spec/v1` Run Gateway.
 
-This minimal template implements the Run Gateway API using only the SDK packages:
+This JARVIS component implements the Run Gateway API using the SDK packages:
 `arp-standard-server`, `arp-standard-model`, and `arp-standard-client`.
-
-It is intentionally small and readable so you can replace the core logic with your own infrastructure while keeping the same API surface.
 
 Implements: ARP Standard `spec/v1` Run Gateway API (contract: `ARP_Standard/spec/v1/openapi/run-gateway.openapi.yaml`).
 
 ## Requirements
 
-- Python >= 3.10
+- Python >= 3.11
 
 ## Install
 
@@ -21,7 +19,7 @@ python3 -m pip install -e .
 
 ## Local configuration (optional)
 
-For local dev convenience, read, edit and rename the template env file:
+For local dev convenience, copy the example env file:
 
 ```bash
 cp .env.example .env.local
@@ -35,7 +33,7 @@ cp .env.example .env.local
 
 ```bash
 python3 -m pip install -e '.[run]'
-python3 -m arp_template_run_gateway
+python3 -m jarvis_run_gateway
 ```
 
 > [!TIP]
@@ -43,23 +41,37 @@ python3 -m arp_template_run_gateway
 
 ## Using this repo
 
-This template is the minimum viable standalone Run Gateway implementation.
+This repo is the maintained JARVIS reference for the Run Gateway.
 
-To build your own gateway, fork this repository and replace the in-memory logic with your infrastructure while preserving request/response semantics.
-
-If all you need is to change run lifecycle behavior, edit:
-- `src/arp_template_run_gateway/gateway.py` (incoming API handlers)
-- `src/arp_template_run_gateway/run_coordinator_client.py` (gateway → coordinator client behavior)
+To customize behavior, edit:
+- `src/jarvis_run_gateway/gateway.py` (incoming API handlers)
+- `src/jarvis_run_gateway/run_coordinator_client.py` (gateway → coordinator client behavior)
 
 ### Default behavior
 
-- If `ARP_RUN_COORDINATOR_URL` is set, the gateway forwards `start/get/cancel/stream` calls to the Run Coordinator.
-- If not set, runs are stored in memory (for quick local iteration).
+- The gateway requires a configured Run Coordinator at startup.
+- All run lifecycle methods forward to the coordinator (no local fallback).
+- The gateway validates inbound JWTs and exchanges them for coordinator-scoped tokens.
 
 ### Common extensions
 
-- Add proper authN/authZ and token exchange for forwarded requests.
-- Replace the in-memory fallback with your database or job system.
+- Customize outbound auth (token caching, mTLS) between gateway and coordinator.
+- Add gateway-side validation/quotas before forwarding.
+
+## Implementation overview
+
+Request flow:
+1) Inbound request hits the Run Gateway (`arp-standard-server`).
+2) Auth middleware validates the `Authorization: Bearer <JWT>` header.
+3) Gateway captures the inbound bearer token and forwards the call to the coordinator.
+4) Gateway exchanges the inbound token for a coordinator-scoped token (or uses client-credentials when no token is present in dev/optional mode).
+5) Coordinator processes the request and the gateway returns the response.
+
+Key implementation details:
+- Stateless gateway: no local run storage or caching.
+- Coordinator is required at startup; the gateway fails fast if missing.
+- Token exchange uses `arp-auth` (OIDC client credentials + RFC 8693 token exchange).
+- NDJSON streams are proxied as opaque bytes (no rewrite).
 
 ## Quick health check
 
@@ -75,8 +87,11 @@ CLI flags:
 - `--reload` (dev only)
 
 Environment variables:
-- `ARP_RUN_COORDINATOR_URL`: base URL for the Run Coordinator (example: `http://127.0.0.1:8081`). If set, the gateway proxies requests to it.
-- `ARP_RUN_COORDINATOR_BEARER_TOKEN`: optional bearer token used for gateway → coordinator calls.
+- `JARVIS_RUN_COORDINATOR_URL`: base URL for the Run Coordinator (example: `http://127.0.0.1:8081`). Required at startup.
+- `JARVIS_RUN_COORDINATOR_AUDIENCE`: audience for token exchange (default: `arp-run-coordinator`).
+- `ARP_AUTH_CLIENT_ID` / `ARP_AUTH_CLIENT_SECRET`: required for STS token exchange for outbound coordinator calls.
+- `ARP_AUTH_ISSUER`: OIDC issuer (required unless `ARP_AUTH_TOKEN_ENDPOINT` is set).
+- `ARP_AUTH_TOKEN_ENDPOINT`: optional override for the STS token endpoint.
 
 ## Validate conformance (`arp-conformance`)
 
@@ -104,11 +119,40 @@ arp-conformance check run-gateway --url http://127.0.0.1:8080 --tier surface
 
 ## Authentication
 
-For out-of-the-box usability, this template defaults to auth-disabled unless you set `ARP_AUTH_MODE` or `ARP_AUTH_PROFILE`.
+Auth is enabled by default (JWT). To disable for local dev, set `ARP_AUTH_PROFILE=dev-insecure`.
+If no `ARP_AUTH_*` env vars are set, the gateway defaults to required JWT auth with the dev Keycloak issuer.
 
-To enable JWT auth, set either:
-- `ARP_AUTH_PROFILE=dev-secure-keycloak` + `ARP_AUTH_SERVICE_ID=<audience>`
-- or `ARP_AUTH_MODE=required` with `ARP_AUTH_ISSUER` and `ARP_AUTH_AUDIENCE`
+To enable local Keycloak defaults, set:
+- `ARP_AUTH_PROFILE=dev-secure-keycloak`
+- `ARP_AUTH_SERVICE_ID=arp-run-gateway`
+- `ARP_AUTH_ISSUER=http://localhost:8080/realms/arp-dev`
+
+### Gateway → Coordinator token exchange
+
+The gateway exchanges the incoming bearer token for a coordinator-scoped token before forwarding.
+This uses `arp-auth` and requires `ARP_AUTH_CLIENT_ID`/`ARP_AUTH_CLIENT_SECRET`.
+
+If no inbound token is present (only possible when `ARP_AUTH_MODE=optional` or `disabled`),
+the gateway falls back to client-credentials to obtain a service token. This is intended for
+dev/internal usage only; production should keep `ARP_AUTH_MODE=required`.
+
+### External user tokens (Keycloak broker)
+
+If user tokens come from an external IdP but exchange should happen at Keycloak STS:
+
+```bash
+ARP_AUTH_MODE=required
+ARP_AUTH_ISSUER=https://idp.example.com/oidc
+
+ARP_AUTH_TOKEN_ENDPOINT=https://keycloak.example.com/realms/arp-dev/protocol/openid-connect/token
+ARP_AUTH_CLIENT_ID=arp-run-gateway
+ARP_AUTH_CLIENT_SECRET=...
+
+JARVIS_RUN_COORDINATOR_AUDIENCE=arp-run-coordinator
+JARVIS_RUN_COORDINATOR_URL=https://coordinator.example.com
+```
+
+Keycloak must be configured to trust the external IdP and allow token exchange for the subject token.
 
 ## Upgrading
 
