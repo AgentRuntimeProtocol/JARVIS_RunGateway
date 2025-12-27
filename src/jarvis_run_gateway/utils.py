@@ -28,9 +28,7 @@ def run_coordinator_url_from_env() -> str | None:
 
 
 def run_coordinator_audience_from_env() -> str | None:
-    value = os.environ.get("JARVIS_RUN_COORDINATOR_AUDIENCE") or os.environ.get(
-        "JARVIS_RUN_COORDINATOR_SERVICE_ID"
-    )
+    value = os.environ.get("JARVIS_RUN_COORDINATOR_AUDIENCE")
     if value:
         return value.strip() or None
     return "arp-run-coordinator"

@@ -5,7 +5,6 @@ from jarvis_run_gateway.utils import auth_client_from_env, run_coordinator_audie
 
 def test_run_coordinator_audience_default(monkeypatch) -> None:
     monkeypatch.delenv("JARVIS_RUN_COORDINATOR_AUDIENCE", raising=False)
-    monkeypatch.delenv("JARVIS_RUN_COORDINATOR_SERVICE_ID", raising=False)
     assert run_coordinator_audience_from_env() == "arp-run-coordinator"
 
 

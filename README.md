@@ -124,7 +124,7 @@ If no `ARP_AUTH_*` env vars are set, the gateway defaults to required JWT auth w
 
 To enable local Keycloak defaults, set:
 - `ARP_AUTH_PROFILE=dev-secure-keycloak`
-- `ARP_AUTH_SERVICE_ID=arp-run-gateway`
+- `ARP_AUTH_AUDIENCE=arp-run-gateway`
 - `ARP_AUTH_ISSUER=http://localhost:8080/realms/arp-dev`
 
 ### Gateway → Coordinator token exchange
