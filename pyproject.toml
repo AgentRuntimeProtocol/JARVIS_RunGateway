@@ -16,11 +16,11 @@ dependencies = [
   "arp-standard-server==0.3.1",
   "arp-standard-model==0.3.1",
   "arp-auth==0.2.0",
+  "uvicorn>=0.29.0",
 ]
 
 [project.optional-dependencies]
 dev = ["pyright>=1.1.0", "pytest>=7", "pytest-cov>=4"]
-run = ["uvicorn>=0.29.0"]
 
 [project.scripts]
 arp-jarvis-rungateway = "jarvis_run_gateway.__main__:main"

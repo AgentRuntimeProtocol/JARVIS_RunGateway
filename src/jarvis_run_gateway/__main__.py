@@ -1,23 +1,10 @@
 from __future__ import annotations
 
 import argparse
-import importlib
-from types import ModuleType
-
-
-def _load_uvicorn() -> ModuleType:
-    try:
-        return importlib.import_module("uvicorn")
-    except ImportError as exc:
-        raise SystemExit(
-            "uvicorn is not installed. Install with `pip install -e .[run]` "
-            "or `pip install uvicorn`."
-        ) from exc
+import uvicorn
 
 
 def main() -> None:
-    uvicorn = _load_uvicorn()
-
     parser = argparse.ArgumentParser(description="Start the JARVIS Run Gateway server.")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8080)
@@ -36,4 +23,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

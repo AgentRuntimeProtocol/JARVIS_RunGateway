@@ -32,7 +32,7 @@ cp .env.example .env.local
 - Run Gateway listens on `http://127.0.0.1:8080` by default.
 
 ```bash
-python3 -m pip install -e '.[run]'
+python3 -m pip install -e .
 arp-jarvis-rungateway
 ```
 
