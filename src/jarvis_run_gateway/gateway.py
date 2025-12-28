@@ -63,8 +63,7 @@ class RunGateway(BaseRunGatewayServer):
             self._run_coordinator = run_coordinator
             return
 
-        resolved_url = run_coordinator_url or run_coordinator_url_from_env()
-        if resolved_url is None:
+        if (resolved_url := (run_coordinator_url or run_coordinator_url_from_env())) is None:
             raise RuntimeError("Run Coordinator is required for the Run Gateway")
 
         resolved_url = normalize_base_url(resolved_url)
