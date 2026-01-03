@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from arp_standard_model import (
     Check,
     Health,
@@ -26,6 +28,8 @@ from .utils import (
     run_coordinator_audience_from_env,
     run_coordinator_url_from_env,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class RunGateway(BaseRunGatewayServer):
@@ -61,16 +65,26 @@ class RunGateway(BaseRunGatewayServer):
 
         if run_coordinator is not None:
             self._run_coordinator = run_coordinator
+            logger.info(
+                "Run Gateway configured (run_coordinator_url=%s)",
+                getattr(self._run_coordinator, "base_url", "custom"),
+            )
             return
 
         if (resolved_url := (run_coordinator_url or run_coordinator_url_from_env())) is None:
             raise RuntimeError("Run Coordinator is required for the Run Gateway")
 
         resolved_url = normalize_base_url(resolved_url)
+        exchange_audience = run_coordinator_audience_from_env()
         self._run_coordinator = RunCoordinatorGatewayClient(
             base_url=resolved_url,
             auth_client=auth_client_from_env(),
-            exchange_audience=run_coordinator_audience_from_env(),
+            exchange_audience=exchange_audience,
+        )
+        logger.info(
+            "Run Gateway configured (run_coordinator_url=%s, exchange_audience=%s)",
+            resolved_url,
+            exchange_audience,
         )
 
     # Core methods - Run Gateway API implementations
@@ -142,7 +156,28 @@ class RunGateway(BaseRunGatewayServer):
           - Validate/normalize external inputs before forwarding.
           - Enforce authZ and/or quotas here (gateway-facing policy).
         """
-        return await self._require_coordinator().start_run(request.body, subject_token=self._subject_token())
+        root_ref = request.body.root_node_type_ref
+        logger.info(
+            "Run start requested (node_type_id=%s, version=%s, input_keys=%s)",
+            root_ref.node_type_id,
+            root_ref.version,
+            _input_key_count(request.body.input),
+        )
+        try:
+            run = await self._require_coordinator().start_run(request.body, subject_token=self._subject_token())
+        except ArpServerError as exc:
+            logger.warning("Run start failed (%s): %s", exc.code, exc.message)
+            raise
+        except Exception:
+            logger.exception("Run start failed")
+            raise
+        logger.info(
+            "Run started (run_id=%s, root_node_run_id=%s, state=%s)",
+            run.run_id,
+            run.root_node_run_id,
+            run.state,
+        )
+        return run
 
     async def get_run(self, request: RunGatewayGetRunRequest) -> Run:
         """
@@ -155,9 +190,18 @@ class RunGateway(BaseRunGatewayServer):
           - Use your DB/job system as the source of truth instead of memory.
           - Gate visibility (authZ) for multi-tenant environments.
         """
-        return await self._require_coordinator().get_run(
-            request.params.run_id, subject_token=self._subject_token()
-        )
+        run_id = request.params.run_id
+        logger.info("Run fetch requested (run_id=%s)", run_id)
+        try:
+            run = await self._require_coordinator().get_run(run_id, subject_token=self._subject_token())
+        except ArpServerError as exc:
+            logger.warning("Run fetch failed (%s): %s", exc.code, exc.message)
+            raise
+        except Exception:
+            logger.exception("Run fetch failed (run_id=%s)", run_id)
+            raise
+        logger.info("Run fetched (run_id=%s, state=%s)", run.run_id, run.state)
+        return run
 
     async def cancel_run(self, request: RunGatewayCancelRunRequest) -> Run:
         """
@@ -170,9 +214,18 @@ class RunGateway(BaseRunGatewayServer):
           - Enforce authZ (who can cancel which runs).
           - Add cooperative cancellation and cleanup hooks in your backend.
         """
-        return await self._require_coordinator().cancel_run(
-            request.params.run_id, subject_token=self._subject_token()
-        )
+        run_id = request.params.run_id
+        logger.info("Run cancel requested (run_id=%s)", run_id)
+        try:
+            run = await self._require_coordinator().cancel_run(run_id, subject_token=self._subject_token())
+        except ArpServerError as exc:
+            logger.warning("Run cancel failed (%s): %s", exc.code, exc.message)
+            raise
+        except Exception:
+            logger.exception("Run cancel failed (run_id=%s)", run_id)
+            raise
+        logger.info("Run canceled (run_id=%s, state=%s)", run.run_id, run.state)
+        return run
 
     async def stream_run_events(self, request: RunGatewayStreamRunEventsRequest) -> str:
         """
@@ -186,19 +239,37 @@ class RunGateway(BaseRunGatewayServer):
           - Implement your own event store and stream NDJSON lines.
           - Add filtering/redaction for external consumers.
         """
-        return await self._require_coordinator().stream_run_events(
-            request.params.run_id, subject_token=self._subject_token()
-        )
+        run_id = request.params.run_id
+        logger.info("Run events stream requested (run_id=%s)", run_id)
+        try:
+            payload = await self._require_coordinator().stream_run_events(
+                run_id, subject_token=self._subject_token()
+            )
+        except ArpServerError as exc:
+            logger.warning("Run events stream failed (%s): %s", exc.code, exc.message)
+            raise
+        except Exception:
+            logger.exception("Run events stream failed (run_id=%s)", run_id)
+            raise
+        logger.info("Run events stream ready (run_id=%s, bytes=%s)", run_id, len(payload))
+        return payload
 
     # Helpers (internal): implementation detail for the reference implementation.
     def _require_coordinator(self) -> RunCoordinatorGatewayClient:
         if self._run_coordinator is None:
+            logger.error("Run Coordinator is not configured for this gateway")
             raise ArpServerError(
                 code="run_coordinator_missing",
                 message="Run Coordinator is not configured for this gateway",
                 status_code=503,
             )
         return self._run_coordinator
+
+
+def _input_key_count(payload: object | None) -> int | None:
+    if isinstance(payload, dict):
+        return len(payload)
+    return None
 
     def _subject_token(self) -> str | None:
         return get_bearer_token()
