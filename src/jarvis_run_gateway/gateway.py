@@ -265,11 +265,11 @@ class RunGateway(BaseRunGatewayServer):
             )
         return self._run_coordinator
 
+    def _subject_token(self) -> str | None:
+        return get_bearer_token()
+
 
 def _input_key_count(payload: object | None) -> int | None:
     if isinstance(payload, dict):
         return len(payload)
     return None
-
-    def _subject_token(self) -> str | None:
-        return get_bearer_token()
